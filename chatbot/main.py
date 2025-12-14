@@ -19,12 +19,19 @@ from transcript import router as transcript_router
 
 app = FastAPI()
 
-# Configuration CORS
+# Configuration CORS SÉCURISÉE
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",              # Développement local (React/Next.js)
+        "http://localhost:3001",              # Développement local (Svelte)
+        "http://localhost:8080",              # Développement local (Vue)
+        "https://rosaine-academy.org",        # Production
+        "https://www.rosaine-academy.org",    # Production avec www
+        "https://rosaine-academy.vercel.app", # Vercel preview (si déployé là)
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 

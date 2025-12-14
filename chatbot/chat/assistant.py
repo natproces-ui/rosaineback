@@ -15,7 +15,7 @@ if not api_key:
     raise ValueError("GOOGLE_API_KEY manquante dans le fichier .env")
 
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel("models/gemini-2.0-flash")
+model = genai.GenerativeModel("models/gemini-2.5-flash")
 print("✅ Modèle Gemini configuré")
 
 

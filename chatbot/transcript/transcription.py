@@ -103,7 +103,7 @@ IMPORTANT : Réponds UNIQUEMENT avec la transcription formatée, ligne par ligne
 """
     
     try:
-        # ✅ Utilisation de gemini-2.0-flash-exp (modèle le plus récent)
+        # ✅ Utilisation de gemini-2.5-flash
         model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(
             prompt,
