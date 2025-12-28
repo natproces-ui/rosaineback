@@ -3,16 +3,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
-# Import des fonctions depuis les sous-modules
-from chat.assistant import (
+# Import des fonctions depuis les sous-modules (imports relatifs)
+from chat.video_assistant import (
     ai_assistant_text,
     ai_assistant_image,
     course_recommendation,
-    ai_assistant_text_post,  # ✅ NOUVEAU
-    AssistantRequest          # ✅ NOUVEAU
+    ai_assistant_text_post,
+    AssistantRequest
 )
 
-from chat.assistant_exo import ai_assistant_exo
+from chat.exo_assistant import ai_assistant_exo
+from chat.quota_info import get_user_quotas  # ✅ Nouveau import
 
 # Import du router transcription
 from transcript import router as transcript_router
@@ -41,7 +42,10 @@ app.get("/ai_assistant_image")(ai_assistant_image)
 app.get("/course_recommendation")(course_recommendation)
 app.get("/ai_assistant_exo")(ai_assistant_exo)
 
-# ✅ NOUVEAU : Route POST pour l'assistant avec transcription
+# ✅ ENDPOINT QUOTA
+app.get("/quota")(get_user_quotas)
+
+# Route POST pour l'assistant avec transcription
 @app.post("/ai_assistant_chat")
 async def assistant_chat(request: AssistantRequest):
     return await ai_assistant_text_post(request)
