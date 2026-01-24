@@ -298,3 +298,167 @@ Reponds maintenant en suivant ces consignes. N'oublie pas de faire reference aux
         error_msg = f"Erreur lors de la génération: {str(e)}"
         log_error(e, "Génération réponse")
         return JSONResponse(content={"error": error_msg}, status_code=500)
+    
+
+
+
+
+
+async def extract_exercise_from_image(
+    user_id: str = Query(..., description="ID de l'utilisateur"),
+    file: UploadFile = File(...)
+):
+    """
+    Extrait un exercice mathématique depuis une image uploadée
+    """
+    try:
+        # 🔒 Vérifier le quota
+        log_info(f"Extraction image pour user {user_id}", "📷")
+        quota_info = await check_quota(user_id, "exo_assistant")
+        
+        if not quota_info["allowed"]:
+            warning_level = get_quota_warning_level(quota_info["percentage"])
+            return JSONResponse(
+                content={
+                    "error": "Quota quotidien dépassé",
+                    "message": "Vous avez atteint votre limite pour aujourd'hui.",
+                    "quota": {
+                        "used": quota_info["used"],
+                        "limit": quota_info["limit"],
+                        "remaining": quota_info["remaining"],
+                        "percentage": quota_info["percentage"],
+                        "warning_level": warning_level
+                    }
+                },
+                status_code=429
+            )
+        
+        # Lire et convertir l'image
+        image_data = await file.read()
+        
+        # Vérifier la taille (max 5MB)
+        if len(image_data) > 5 * 1024 * 1024:
+            return JSONResponse(
+                content={"error": "Image trop lourde (max 5MB)"},
+                status_code=400
+            )
+        
+        # Optimiser l'image si nécessaire
+        image = Image.open(io.BytesIO(image_data))
+        
+        # Redimensionner si trop grande
+        max_size = 2048
+        if image.width > max_size or image.height > max_size:
+            image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            
+            # Reconvertir en bytes
+            buffer = io.BytesIO()
+            image.save(buffer, format=image.format or "PNG")
+            image_data = buffer.getvalue()
+        
+        # Convertir en base64
+        base64_image = base64.b64encode(image_data).decode('utf-8')
+        
+        # Prompt d'extraction
+        prompt = """
+Analyse cette image et extrais l'énoncé de l'exercice mathématique.
+
+RÈGLES STRICTES :
+1. Convertis TOUTES les formules en LaTeX avec délimiteurs $ ou $$
+2. Structure claire : Titre, Énoncé, Questions (si plusieurs)
+3. Garde la numérotation originale des questions
+4. Si image floue/illisible : signale-le clairement
+5. Si pas d'exercice : dis "Aucun exercice détecté"
+
+FORMAT DE RÉPONSE :
+{
+  "success": true/false,
+  "title": "Titre de l'exercice",
+  "statement": "Énoncé complet avec $formules$ LaTeX",
+  "questions": ["Question 1...", "Question 2..."],
+  "difficulty": "facile/moyen/difficile" (estimation),
+  "tags": ["tag1", "tag2"],
+  "warning": "Message si problème (image floue, etc.)"
+}
+
+Si image illisible ou pas d'exercice, retourne :
+{
+  "success": false,
+  "error": "Raison précise"
+}
+
+Réponds UNIQUEMENT en JSON, sans texte avant/après.
+"""
+        
+        # Appel Gemini Vision
+        response = model.generate_content([
+            prompt,
+            {
+                "mime_type": f"image/{image.format.lower() if image.format else 'png'}",
+                "data": base64_image
+            }
+        ])
+        
+        response_text = response.text.strip()
+        
+        # Nettoyer le JSON si nécessaire
+        if response_text.startswith("```json"):
+            response_text = response_text.replace("```json", "").replace("```", "").strip()
+        
+        # Parser la réponse
+        extracted = json.loads(response_text)
+        
+        if not extracted.get("success"):
+            return JSONResponse(
+                content={
+                    "error": extracted.get("error", "Impossible d'extraire l'exercice"),
+                    "warning": extracted.get("warning")
+                },
+                status_code=400
+            )
+        
+        # ✅ Incrémenter le quota
+        await increment_quota(user_id, "exo_assistant")
+        
+        # Calculer nouveau quota
+        new_used = quota_info["used"] + 1
+        new_remaining = quota_info["limit"] - new_used
+        new_percentage = round((new_used / quota_info["limit"]) * 100, 1)
+        warning_level = get_quota_warning_level(new_percentage)
+        
+        log_success(f"Exercice extrait | Quota: {new_used}/{quota_info['limit']}")
+        
+        return JSONResponse(content={
+            "success": True,
+            "exercise": {
+                "id": f"photo_{int(datetime.now().timestamp() * 1000)}",
+                "title": extracted.get("title", "Exercice (Photo)"),
+                "statement": extracted.get("statement", ""),
+                "questions": extracted.get("questions", []),
+                "difficulty": extracted.get("difficulty", "moyen"),
+                "tags": extracted.get("tags", []),
+                "source": "photo",
+                "warning": extracted.get("warning")
+            },
+            "quota": {
+                "used": new_used,
+                "limit": quota_info["limit"],
+                "remaining": new_remaining,
+                "percentage": new_percentage,
+                "warning_level": warning_level
+            },
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except json.JSONDecodeError as e:
+        log_error(e, "Parse JSON extraction")
+        return JSONResponse(
+            content={"error": "Erreur lors de l'analyse de l'image"},
+            status_code=500
+        )
+    except Exception as e:
+        log_error(e, "Extraction image")
+        return JSONResponse(
+            content={"error": f"Erreur: {str(e)}"},
+            status_code=500
+        )

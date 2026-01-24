@@ -12,7 +12,7 @@ from chat.video_assistant import (
     AssistantRequest
 )
 
-from chat.exo_assistant import ai_assistant_exo
+from chat.exo_assistant import ai_assistant_exo, extract_exercise_from_image
 from chat.quota_info import get_user_quotas  # ✅ Nouveau import
 
 # Import du router transcription
@@ -41,6 +41,7 @@ app.get("/ai_assistant_text")(ai_assistant_text)
 app.get("/ai_assistant_image")(ai_assistant_image)
 app.get("/course_recommendation")(course_recommendation)
 app.get("/ai_assistant_exo")(ai_assistant_exo)
+app.post("/assistant/extract-exercise")(extract_exercise_from_image)
 
 # ✅ ENDPOINT QUOTA
 app.get("/quota")(get_user_quotas)
