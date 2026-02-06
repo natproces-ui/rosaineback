@@ -1,9 +1,13 @@
-from fastapi import Query
+# backend/routes/assistant_exo.py
+from fastapi import Query, UploadFile, File
 from fastapi.responses import JSONResponse
 from typing import Optional
 from datetime import datetime
 import json
 import traceback
+import io
+import base64
+from PIL import Image
 
 # Import centralisé depuis manager
 from manager import model, log_question, log_success, log_error, log_info
@@ -30,7 +34,6 @@ def build_multi_exercise_context(active_exercises: Optional[str]) -> str:
             if ex.get('difficulty'):
                 context += f"Difficulté: {ex['difficulty']}\n"
             
-            # ✨ Nouveau : Indiquer si exercice multi-thématiques
             if ex.get('isMultiCourse'):
                 courses_list = ex.get('courses', [])
                 if courses_list:
@@ -42,7 +45,6 @@ def build_multi_exercise_context(active_exercises: Optional[str]) -> str:
                 context += f"Mots-clés: {ex['tags']}\n"
             
             if ex.get('statement'):
-                # Limite augmentée à 1500 caractères
                 statement = ex['statement']
                 if len(statement) > 1500:
                     statement = statement[:1500] + "..."
@@ -110,14 +112,9 @@ async def ai_assistant_exo(
 ):
     """
     Assistant pédagogique pour les exercices
-    - Vérifie le quota utilisateur avant de traiter
-    - Maintient une conversation contextuelle
-    - Guide l'élève sans donner la solution complète
-    - Gère plusieurs exercices simultanément
-    - Reconnaît les exercices multi-thématiques (synthèse)
     """
     try:
-        # 🔒 ÉTAPE 1 : Vérifier le quota
+        # 🔒 Vérifier le quota
         log_info(f"Vérification quota pour user {user_id}", "🔒")
         quota_info = await check_quota(user_id, "exo_assistant")
         
@@ -142,7 +139,6 @@ async def ai_assistant_exo(
                 status_code=429
             )
         
-        # 📊 Logging avec info quota
         log_question(question, f"Exercice: {exo_id or 'Aucun'} | Quota: {quota_info['used']}/{quota_info['limit']}")
         log_info(f"Exercices actifs: {active_exercises[:50] + '...' if active_exercises and len(active_exercises) > 50 else active_exercises or 'Aucun'}", "📚")
         log_info(f"Niveau: {user_level or 'Non spécifié'}", "👤")
@@ -154,122 +150,160 @@ async def ai_assistant_exo(
         )
         history_context = build_history_context(conversation_history)
         
-        # Construction du prompt avec support multi-cours
+        # ✅ PROMPT AVEC RÈGLES LATEX STRICTES
         prompt = f"""
-Tu es un assistant pedagogique specialise dans l'aide aux exercices de mathematiques pour le secondaire (programme francais).
+Tu es un assistant pédagogique spécialisé dans l'aide aux exercices de mathématiques pour le secondaire (programme français).
 
-CONTEXTE DE L'ELEVE:
-Niveau: {user_level or "Non specifie"}
-Matiere: {user_subject or "Non specifie"}
+CONTEXTE DE L'ÉLÈVE:
+Niveau: {user_level or "Non spécifié"}
+Matière: {user_subject or "Non spécifié"}
 {multi_exo_context}
 {exo_context}
 {history_context}
 
-🎯 TON ROLE PRINCIPAL:
-Aider l'eleve a COMPRENDRE et RESOUDRE par lui-meme, en t'appuyant sur les exercices qu'il a selectionnes quand c'est pertinent.
+🎯 TON RÔLE PRINCIPAL:
+Aider l'élève à COMPRENDRE et RÉSOUDRE par lui-même, en t'appuyant sur les exercices qu'il a sélectionnés quand c'est pertinent.
 
-📚 UTILISATION DES EXERCICES SELECTIONNES:
+📐 FORMATAGE MATHÉMATIQUE **OBLIGATOIRE** :
 
-IMPORTANT: L'élève a coché des exercices pour que tu aies accès à leur contenu.
+**RÈGLES STRICTES LATEX - À RESPECTER ABSOLUMENT :**
+
+1. **Formules inline** : Utilise TOUJOURS \\( et \\) ou $ et $
+   - ✅ CORRECT : "Le vecteur \\(\\vec{{i}}\\) est unitaire"
+   - ✅ CORRECT : "On a $x^2 + 1 = 0$"
+   - ❌ INTERDIT : "Le vecteur \\vec{{i}} est unitaire" (sans délimiteurs)
+   - ❌ INTERDIT : "x^2 + 1" (sans délimiteurs)
+
+2. **Formules display (centrées)** : Utilise \\[ et \\] ou $$ et $$
+   - ✅ CORRECT : 
+```
+     \\[
+     d : \\begin{{cases}}
+     x = 1 \\\\
+     y = 2 - k \\\\
+     z = 4 - 3k
+     \\end{{cases}}
+     \\quad k \\in \\mathbb{{R}}
+     \\]
+```
+   - ❌ INTERDIT : Système sans délimiteurs
+
+3. **Symboles mathématiques** : TOUJOURS entre délimiteurs
+   - ✅ "La limite \\(\\lim_{{x \\to 0}} \\frac{{\\sin x}}{{x}} = 1\\)"
+   - ✅ "Pour tout \\(x \\in \\mathbb{{R}}\\)"
+   - ❌ "La limite lim sans délimiteurs"
+   - ❌ "Pour tout x ∈ R" (sans LaTeX)
+
+4. **Ensembles** : 
+   - ✅ "\\(k \\in \\mathbb{{R}}\\)"
+   - ✅ "L'ensemble $\\mathbb{{N}}$ des entiers naturels"
+   - ❌ "k ∈ R" (sans délimiteurs)
+
+5. **Vecteurs** :
+   - ✅ "Le vecteur \\(\\vec{{AB}}\\) ou \\(\\overrightarrow{{AB}}\\)"
+   - ❌ "Le vecteur AB" (sans LaTeX)
+
+**EXEMPLES COMPLETS DE RÉPONSES BIEN FORMATÉES :**
+
+Question : "Comment résoudre ce système ?"
+✅ BONNE réponse :
+```
+Pour résoudre ce système, on cherche \\(k\\) et \\(t\\) tels que :
+
+\\[
+\\begin{{cases}}
+x = 1 = 2 - t \\\\
+y = 2 - k = -3 + 4t \\\\
+z = 4 - 3k = 1
+\\end{{cases}}
+\\]
+
+De la première équation : \\(t = 1\\)
+
+De la troisième : \\(z = 4 - 3k = 1\\) donc \\(3k = 3\\) et \\(k = 1\\).
+
+Vérifions avec la deuxième : \\(y = 2 - 1 = 1\\) et \\(-3 + 4(1) = 1\\) ✓
+
+Le point d'intersection est \\(A(1; 1; 1)\\).
+```
+
+❌ MAUVAISE réponse (sans délimiteurs) :
+```
+Pour résoudre, cherche k et t tels que x = 1 = 2 - t
+De la première : t = 1
+De z = 4 - 3k = 1 on a k = 1
+```
+
+Question : "C'est quoi un vecteur ?"
+✅ BONNE réponse :
+```
+Un vecteur \\(\\vec{{u}}\\) est défini par :
+- Une direction (la droite qui le porte)
+- Un sens (gauche/droite, haut/bas)
+- Une norme \\(\\|\\vec{{u}}\\|\\) (sa longueur)
+
+Notation : \\(\\vec{{AB}}\\) ou \\(\\overrightarrow{{AB}}\\) pour le vecteur allant de \\(A\\) à \\(B\\).
+
+Exemple : Si \\(A(1; 2)\\) et \\(B(4; 6)\\), alors :
+\\[
+\\vec{{AB}} = \\begin{{pmatrix}} 4-1 \\\\ 6-2 \\end{{pmatrix}} = \\begin{{pmatrix}} 3 \\\\ 4 \\end{{pmatrix}}
+\\]
+```
+
+**MACROS LATEX DISPONIBLES** (à utiliser entre délimiteurs) :
+- Vecteurs : \\vec{{AB}}, \\overrightarrow{{AB}}
+- Ensembles : \\mathbb{{R}}, \\mathbb{{N}}, \\mathbb{{Z}}, \\mathbb{{Q}}, \\mathbb{{C}}
+- Systèmes : \\begin{{cases}} ... \\end{{cases}}
+- Fractions : \\frac{{a}}{{b}}
+- Racines : \\sqrt{{x}}, \\sqrt[n]{{x}}
+- Limites : \\lim_{{x \\to a}}
+- Sommes : \\sum_{{i=1}}^{{n}}
+- Produits : \\prod_{{i=1}}^{{n}}
+- Intégrales : \\int_{{a}}^{{b}}
+
+📚 UTILISATION DES EXERCICES SÉLECTIONNÉS:
+
+L'élève a coché des exercices pour que tu aies accès à leur contenu.
 Tu as accès à TOUS les énoncés des exercices sélectionnés ci-dessus.
 
 ✅ CE QUE TU DOIS FAIRE:
-- Référer aux exercices par leur NUMERO (Exercice 1, Exercice 2, etc.) ou leur TITRE
-- JAMAIS mentionner les IDs techniques (comme "O5GvOruAD3PuKSNBiCH6")
+- Référer aux exercices par leur NUMÉRO (Exercice 1, Exercice 2, etc.) ou leur TITRE
+- JAMAIS mentionner les IDs techniques
 - T'appuyer sur les énoncés fournis pour donner des réponses concrètes
+- **TOUJOURS formater les maths avec les délimiteurs LaTeX**
 - Faire des liens entre les exercices sélectionnés si pertinent
-- Détecter si l'élève semble bloqué depuis plusieurs messages et adapter ton niveau d'aide
 
-🔗 EXERCICES MULTI-THEMATIQUES (SYNTHESE):
-- Si un exercice est marqué "MULTI-THEMATIQUES", il combine plusieurs chapitres
-- Mentionne explicitement qu'il mobilise plusieurs notions quand pertinent
-- Exemple: "L'Exercice 3 est un exercice de synthèse qui combine les complexes, les suites et les limites"
-- Ces exercices sont souvent plus difficiles car ils demandent de faire des liens entre chapitres
+🔗 EXERCICES MULTI-THÉMATIQUES (SYNTHÈSE):
+- Si un exercice est marqué "MULTI-THEMATIQUES", mentionne qu'il combine plusieurs chapitres
 - Suggère de maîtriser chaque notion séparément avant d'attaquer l'exercice de synthèse
 
 ❌ CE QUE TU NE DOIS JAMAIS FAIRE:
 - Mentionner les IDs techniques
-- Inventer des informations qui ne sont pas dans les énoncés
+- Inventer des informations
 - Révéler les solutions complètes
+- **Écrire des formules mathématiques SANS délimiteurs LaTeX**
 
-GESTION DES QUESTIONS:
-
-1. Question GENERALE (ex: "C'est quoi X ?")
-   → Explique le concept
-   → Si des exercices sont sélectionnés, fais des liens avec eux
-   → Exemple: "Le théorème de Pythagore... D'ailleurs dans ton Exercice 1 'Les triangles', tu vas l'appliquer..."
-
-2. Question sur UN exercice (ex: "l'exercice 2", "celui sur Pythagore")
-   → Identifie l'exercice par son numéro ou titre
-   → Si multi-thématiques, mentionne les différentes notions mobilisées
-   → Exemple: "L'Exercice 3 combine les suites et les limites. Commençons par la partie suites..."
-   → Si sélectionné: aide concrètement avec son énoncé
-   → Si NON sélectionné: "Coche la case 🤖 sur cet exercice pour que j'y aie accès"
-
-3. Question COMPARATIVE (ex: "ces exercices sont similaires ?")
-   → Compare les exercices sélectionnés
-   → Montre les points communs et différences
-   → Identifie les exercices multi-thématiques qui font des liens
-   → Utilise les numéros: "L'Exercice 1... tandis que l'Exercice 2..."
-   → Exemple: "L'Exercice 3 est plus complexe car il combine des notions des Exercices 1 et 2"
-
-4. Question AMBIGUE (ex: "aide-moi", "je comprends pas")
-   → Si 1 seul exercice sélectionné: concentre-toi dessus
-   → Si plusieurs: 
-     * Demande de préciser OU propose de commencer par le plus simple
-     * Si exercice multi-thématiques disponible, suggère de maîtriser d'abord les notions séparées
-   → Si aucun: réponds de façon générale et suggère de cocher des exercices
-
-5. Si l'élève semble BLOQUE sur un exercice multi-thématiques:
-   → Décompose par notion/chapitre
-   → Suggère de d'abord maîtriser chaque partie séparément
-   → Exemple: "Cet exercice combine suites et limites. Commençons par la partie suites d'abord ?"
-   → Propose des exercices plus simples s'ils sont disponibles parmi ceux sélectionnés
-   → Identifie quelle notion bloque vraiment
-
-6. Si l'élève réussit bien et a des exercices multi-thématiques disponibles:
-   → Félicite et propose d'essayer l'exercice de synthèse
-   → Explique qu'il va mobiliser plusieurs notions
-   → Encourage: "Tu maîtrises bien X et Y, essayons l'Exercice Z qui les combine !"
-   → Prépare-le mentalement: "Ce sera plus difficile car tu dois faire des liens"
-
-7. Si l'élève demande par où commencer avec plusieurs exercices:
-   → Identifie les exercices mono-thématiques vs multi-thématiques
-   → Recommande de faire les mono-thématiques d'abord
-   → Garde les exercices de synthèse pour la fin
-   → Exemple: "Je te conseille de commencer par les Exercices 1 et 2, puis de finir par l'Exercice 3 qui est une synthèse"
-
-REGLES D'OR:
-✅ TOUJOURS verifier si des exercices sont selectionnes
-✅ TOUJOURS identifier les exercices multi-thématiques
-✅ TOUJOURS en profiter pour faire des liens concrets
-✅ TOUJOURS guider sans donner la reponse finale
-✅ JAMAIS reveler la solution complete
-✅ TOUJOURS encourager et feliciter les bonnes demarches
-✅ TOUJOURS suggérer de maîtriser les bases avant les exercices de synthèse
-
-STYLE DE REPONSE:
+STYLE DE RÉPONSE:
 - Ton bienveillant et encourageant
-- Phrases courtes et precises
-- Emojis pour structurer (📝 💡 🎯 ✅ ⚠️ 🔗 1️⃣ 2️⃣)
-- Reference aux exercices selectionnes quand pertinent
-- Utilise 🔗 pour les exercices multi-thématiques
+- Phrases courtes et précises
+- Emojis pour structurer (📝 💡 🎯 ✅ ⚠️)
+- **Toutes les formules mathématiques entre délimiteurs LaTeX**
 - Maximum 5-6 phrases (sauf explication complexe)
 
-QUESTION DE L'ELEVE:
+QUESTION DE L'ÉLÈVE:
 {question}
 
-Reponds maintenant en suivant ces consignes. N'oublie pas de faire reference aux exercices selectionnes et d'identifier les exercices de synthese quand c'est pertinent !
+Réponds maintenant en suivant SCRUPULEUSEMENT les règles de formatage LaTeX !
+CRITIQUE : N'oublie JAMAIS les délimiteurs \\( \\) ou $ $ pour TOUTES les formules !
 """
         
         # Génération de la réponse
         response = model.generate_content(prompt)
         response_text = response.text
         
-        # ✅ ÉTAPE 2 : Incrémenter le quota après succès
+        # ✅ Incrémenter le quota
         await increment_quota(user_id, "exo_assistant")
         
-        # Calculer le nouveau quota
         new_used = quota_info["used"] + 1
         new_remaining = quota_info["limit"] - new_used
         new_percentage = round((new_used / quota_info["limit"]) * 100, 1)
@@ -298,10 +332,6 @@ Reponds maintenant en suivant ces consignes. N'oublie pas de faire reference aux
         error_msg = f"Erreur lors de la génération: {str(e)}"
         log_error(e, "Génération réponse")
         return JSONResponse(content={"error": error_msg}, status_code=500)
-    
-
-
-
 
 
 async def extract_exercise_from_image(
@@ -312,7 +342,6 @@ async def extract_exercise_from_image(
     Extrait un exercice mathématique depuis une image uploadée
     """
     try:
-        # 🔒 Vérifier le quota
         log_info(f"Extraction image pour user {user_id}", "📷")
         quota_info = await check_quota(user_id, "exo_assistant")
         
@@ -333,64 +362,80 @@ async def extract_exercise_from_image(
                 status_code=429
             )
         
-        # Lire et convertir l'image
         image_data = await file.read()
         
-        # Vérifier la taille (max 5MB)
         if len(image_data) > 5 * 1024 * 1024:
             return JSONResponse(
                 content={"error": "Image trop lourde (max 5MB)"},
                 status_code=400
             )
         
-        # Optimiser l'image si nécessaire
         image = Image.open(io.BytesIO(image_data))
         
-        # Redimensionner si trop grande
         max_size = 2048
         if image.width > max_size or image.height > max_size:
             image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-            
-            # Reconvertir en bytes
             buffer = io.BytesIO()
             image.save(buffer, format=image.format or "PNG")
             image_data = buffer.getvalue()
         
-        # Convertir en base64
         base64_image = base64.b64encode(image_data).decode('utf-8')
         
-        # Prompt d'extraction
+        # ✅ PROMPT AVEC RÈGLES LATEX STRICTES
         prompt = """
 Analyse cette image et extrais l'énoncé de l'exercice mathématique.
 
-RÈGLES STRICTES :
-1. Convertis TOUTES les formules en LaTeX avec délimiteurs $ ou $$
-2. Structure claire : Titre, Énoncé, Questions (si plusieurs)
-3. Garde la numérotation originale des questions
-4. Si image floue/illisible : signale-le clairement
-5. Si pas d'exercice : dis "Aucun exercice détecté"
+**RÈGLES STRICTES LATEX :**
 
-FORMAT DE RÉPONSE :
+1. **Formules inline** : Utilise TOUJOURS \\( et \\) 
+   - Exemple : "Le vecteur \\(\\vec{i}\\) est unitaire"
+   - Exemple : "Pour \\(k \\in \\mathbb{R}\\)"
+
+2. **Formules display (centrées)** : Utilise \\[ et \\]
+   - Exemple : 
+```
+     \\[
+     d : \\begin{cases}
+     x = 1 \\\\
+     y = 2 - k \\\\
+     z = 4 - 3k
+     \\end{cases}
+     \\quad k \\in \\mathbb{R}
+     \\]
+```
+
+3. **Structure** : Titre, Énoncé avec LaTeX, Questions numérotées
+
+4. **Si image floue** : signale-le dans "warning"
+
+**FORMAT JSON OBLIGATOIRE :**
 {
   "success": true/false,
   "title": "Titre de l'exercice",
-  "statement": "Énoncé complet avec $formules$ LaTeX",
-  "questions": ["Question 1...", "Question 2..."],
-  "difficulty": "facile/moyen/difficile" (estimation),
+  "statement": "Énoncé avec \\\\(formules\\\\) LaTeX correctement délimitées",
+  "questions": ["Question 1 avec \\\\(x^2\\\\)...", "Question 2..."],
+  "difficulty": "facile/moyen/difficile",
   "tags": ["tag1", "tag2"],
-  "warning": "Message si problème (image floue, etc.)"
+  "warning": "Message si problème"
 }
 
-Si image illisible ou pas d'exercice, retourne :
+**EXEMPLE CORRECT :**
 {
-  "success": false,
-  "error": "Raison précise"
+  "success": true,
+  "title": "Vecteurs et droites dans l'espace",
+  "statement": "On considère les droites \\\\(d\\\\) et \\\\(d'\\\\) de représentations paramétriques suivantes :\\n\\n\\\\[\\nd : \\\\begin{cases}\\nx = 1 \\\\\\\\\\ny = 2 - k \\\\\\\\\\nz = 4 - 3k\\n\\\\end{cases}\\n\\\\quad k \\\\in \\\\mathbb{R}\\n\\\\]\\n\\n\\\\[\\nd' : \\\\begin{cases}\\nx = 2 - t \\\\\\\\\\ny = -3 + 4t \\\\\\\\\\nz = 1\\n\\\\end{cases}\\n\\\\quad t \\\\in \\\\mathbb{R}\\n\\\\]",
+  "questions": [
+    "Montrer que les droites \\\\(d\\\\) et \\\\(d'\\\\) sont sécantes en un point \\\\(A\\\\), dont on donnera les coordonnées.",
+    "Justifier que le point \\\\(B(3; -7; 2)\\\\) n'appartient pas au plan défini par \\\\(d\\\\) et \\\\(d'\\\\).",
+    "À tout point \\\\(M\\\\) de la droite \\\\(d'\\\\), on associe la fonction \\\\(f(t) = BM^2\\\\). Exprimer \\\\(f(t)\\\\) en fonction du paramètre \\\\(t\\\\)."
+  ],
+  "difficulty": "moyen",
+  "tags": ["géométrie dans l'espace", "vecteurs", "droites", "paramétrage"]
 }
 
-Réponds UNIQUEMENT en JSON, sans texte avant/après.
+Réponds UNIQUEMENT en JSON. N'oublie JAMAIS les délimiteurs \\( \\) et \\[ \\] !
 """
         
-        # Appel Gemini Vision
         response = model.generate_content([
             prompt,
             {
@@ -401,11 +446,9 @@ Réponds UNIQUEMENT en JSON, sans texte avant/après.
         
         response_text = response.text.strip()
         
-        # Nettoyer le JSON si nécessaire
         if response_text.startswith("```json"):
             response_text = response_text.replace("```json", "").replace("```", "").strip()
         
-        # Parser la réponse
         extracted = json.loads(response_text)
         
         if not extracted.get("success"):
@@ -417,10 +460,8 @@ Réponds UNIQUEMENT en JSON, sans texte avant/après.
                 status_code=400
             )
         
-        # ✅ Incrémenter le quota
         await increment_quota(user_id, "exo_assistant")
         
-        # Calculer nouveau quota
         new_used = quota_info["used"] + 1
         new_remaining = quota_info["limit"] - new_used
         new_percentage = round((new_used / quota_info["limit"]) * 100, 1)
