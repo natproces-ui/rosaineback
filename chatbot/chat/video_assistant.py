@@ -131,8 +131,8 @@ STYLE:
 QUESTION: {request.question}
 """
 
-        response = model.generate_content(prompt)
-        
+        response = await model.generate_content_async(prompt)
+
         # ✅ ÉTAPE 2 : Incrémenter le quota après succès
         await increment_quota(request.user_id, "video_assistant")
         
@@ -238,19 +238,19 @@ QUESTION: {question}
 Réponds de façon concise et pédagogique. Utilise $...$ pour les maths.
 """
 
-        response = model.generate_content(prompt)
-        
+        response = await model.generate_content_async(prompt)
+
         # ✅ Incrémenter le quota
         await increment_quota(user_id, "video_assistant")
-        
+
         # Calculer le nouveau quota
         new_used = quota_info["used"] + 1
         new_remaining = quota_info["limit"] - new_used
         new_percentage = round((new_used / quota_info["limit"]) * 100, 1)
         warning_level = get_quota_warning_level(new_percentage)
-        
+
         log_success(f"Quota: {new_used}/{quota_info['limit']}")
-        
+
         return JSONResponse(content={
             "response": response.text,
             "quota": {
@@ -339,7 +339,7 @@ QUESTION: {question}
 Analyse l'image et réponds de façon pédagogique.
 """
         
-        response = model.generate_content([prompt, uploaded_file])
+        response = await model.generate_content_async([prompt, uploaded_file])
         
         # ✅ Incrémenter le quota
         await increment_quota(user_id, "image_upload")

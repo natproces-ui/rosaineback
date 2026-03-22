@@ -9,7 +9,7 @@ import io
 import base64
 from PIL import Image
 
-from manager import model, log_question, log_success, log_error, log_info
+from manager import model, model_json, log_question, log_success, log_error, log_info
 from manager.quota_manager import check_quota, increment_quota, get_quota_warning_level
 from chat.json_utils import safe_json_loads
 from chat.exo_prompts import build_assistant_prompt, EXTRACTION_PROMPT
@@ -132,7 +132,7 @@ async def ai_assistant_exo(
             question
         )
 
-        response = model.generate_content(prompt)
+        response = await model.generate_content_async(prompt)
         response_text = response.text
 
         await increment_quota(user_id, "exo_assistant")
@@ -208,15 +208,7 @@ async def extract_exercise_from_image(
 
         # model_json : mode JSON natif Gemini (structure garantie)
         # safe_json_loads : fallback fix backslashes LaTeX
-        import google.generativeai as genai
-        model_json = genai.GenerativeModel(
-            model_name="models/gemini-2.5-flash",
-            generation_config=genai.types.GenerationConfig(
-                response_mime_type="application/json"
-            )
-        )
-
-        response = model_json.generate_content([
+        response = await model_json.generate_content_async([
             EXTRACTION_PROMPT,
             {
                 "mime_type": f"image/{image.format.lower() if image.format else 'png'}",

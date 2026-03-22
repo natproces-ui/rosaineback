@@ -15,4 +15,12 @@ genai.configure(api_key=api_key)
 # Modèle unique partagé par tous les assistants
 model = genai.GenerativeModel("models/gemini-2.5-flash")
 
+# Modèle JSON pour l'extraction d'exercices (réponse structurée)
+model_json = genai.GenerativeModel(
+    model_name="models/gemini-2.5-flash",
+    generation_config=genai.types.GenerationConfig(
+        response_mime_type="application/json"
+    )
+)
+
 print("✅ Modèle Gemini configuré (manager/gemini_client.py)")
