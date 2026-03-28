@@ -80,7 +80,7 @@ def build_history_context(conversation_history: Optional[str]) -> str:
     return f"\n💬 HISTORIQUE DE LA CONVERSATION:\n{conversation_history}\n"
 
 
-# ─── ROUTE : ASSISTANT EXO ─────────────────────────────────────────────────────
+# ─── ROUTE : ASSISTANT EXO (questions texte) ───────────────────────────────────
 
 async def ai_assistant_exo(
     user_id: str = Query(..., description="ID de l'utilisateur (Firebase UID)"),
@@ -98,6 +98,7 @@ async def ai_assistant_exo(
 ):
     try:
         log_info(f"Vérification quota pour user {user_id}", "🔒")
+        # Questions texte → quota exo_assistant
         quota_info = await check_quota(user_id, "exo_assistant")
 
         if not quota_info["allowed"]:
@@ -135,12 +136,13 @@ async def ai_assistant_exo(
         response = await model.generate_content_async(prompt)
         response_text = response.text
 
+        # Incrémenter exo_assistant
         await increment_quota(user_id, "exo_assistant")
         new_used = quota_info["used"] + 1
         new_remaining = quota_info["limit"] - new_used
         new_percentage = round((new_used / quota_info["limit"]) * 100, 1)
         warning_level = get_quota_warning_level(new_percentage)
-        log_success(f"Quota: {new_used}/{quota_info['limit']}")
+        log_success(f"Quota exo_assistant: {new_used}/{quota_info['limit']}")
 
         return JSONResponse(content={
             "response": response_text,
@@ -171,7 +173,8 @@ async def extract_exercise_from_image(
 ):
     try:
         log_info(f"Extraction image pour user {user_id}", "📷")
-        quota_info = await check_quota(user_id, "exo_assistant")
+        # Upload image → quota image_upload
+        quota_info = await check_quota(user_id, "image_upload")
 
         if not quota_info["allowed"]:
             warning_level = get_quota_warning_level(quota_info["percentage"])
@@ -206,8 +209,6 @@ async def extract_exercise_from_image(
 
         base64_image = base64.b64encode(image_data).decode("utf-8")
 
-        # model_json : mode JSON natif Gemini (structure garantie)
-        # safe_json_loads : fallback fix backslashes LaTeX
         response = await model_json.generate_content_async([
             EXTRACTION_PROMPT,
             {
@@ -227,12 +228,13 @@ async def extract_exercise_from_image(
                 status_code=400,
             )
 
-        await increment_quota(user_id, "exo_assistant")
+        # Incrémenter image_upload
+        await increment_quota(user_id, "image_upload")
         new_used = quota_info["used"] + 1
         new_remaining = quota_info["limit"] - new_used
         new_percentage = round((new_used / quota_info["limit"]) * 100, 1)
         warning_level = get_quota_warning_level(new_percentage)
-        log_success(f"Exercice extrait | Quota: {new_used}/{quota_info['limit']}")
+        log_success(f"Exercice extrait | Quota image_upload: {new_used}/{quota_info['limit']}")
 
         return JSONResponse(content={
             "success": True,
